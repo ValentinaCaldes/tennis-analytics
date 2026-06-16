@@ -8,7 +8,6 @@ Non-commercial, attribution required. See README.
 """
 
 import io
-
 import pandas as pd
 import requests
 import streamlit as st
@@ -40,8 +39,16 @@ TOURS = {
     "ATP (men)": {"repo": "tennis_atp", "prefix": "atp_matches_", "default": "Carlos Alcaraz"},
     "WTA (women)": {"repo": "tennis_wta", "prefix": "wta_matches_", "default": "Iga Swiatek"},
 }
-RAW_BASE = "https://cdn.jsdelivr.net/gh/JeffSackmann/{repo}@master/{prefix}{year}.csv"
-YEARS = tuple(range(2018, 2025))  # 2018–2024 (widen in the code if you want more history)
+
+# The same public GitHub data, via several mirrors. raw.githubusercontent.com
+# rate-limits shared cloud IPs (like Streamlit Cloud) and 404s, so we prefer
+# CDNs that mirror GitHub. We try each source in order until one responds.
+DATA_SOURCES = [
+    "https://cdn.jsdelivr.net/gh/JeffSackmann/{repo}@master/{prefix}{year}.csv",
+    "https://cdn.statically.io/gh/JeffSackmann/{repo}/master/{prefix}{year}.csv",
+    "https://raw.githubusercontent.com/JeffSackmann/{repo}/refs/heads/master/{prefix}{year}.csv",
+]
+YEARS = tuple(range(2018, 2025))  # 2018–2024 (widen here if you want more history)
 MIN_MATCHES = 20  # only show players with at least this many matches in the dropdown
 
 # Light, intentional styling (one signature, kept restrained)
@@ -62,22 +69,29 @@ STAT_COLS = ["ace", "df", "svpt", "1stIn", "1stWon", "2ndWon", "SvGms", "bpSaved
 
 
 # --------------------------------------------------------------------------- #
-# Data loading
+# Data loading (tries several mirrors per file)
 # --------------------------------------------------------------------------- #
 @st.cache_data(show_spinner=True, ttl=60 * 60 * 24)
 def load_matches(repo: str, prefix: str, years: tuple):
     frames, errors = [], []
     for y in years:
-        url = RAW_BASE.format(repo=repo, prefix=prefix, year=y)
-        try:
-            resp = requests.get(url, headers=HEADERS, timeout=30)
-            resp.raise_for_status()
-            df = pd.read_csv(io.StringIO(resp.text))
-            df["season"] = y
-            frames.append(df)
-        except Exception as e:  # skip a year that fails rather than break the app
-            errors.append(f"{y}: {type(e).__name__} — {e}")
-            continue
+        df_year, last_err = None, None
+        for template in DATA_SOURCES:
+            url = template.format(repo=repo, prefix=prefix, year=y)
+            try:
+                resp = requests.get(url, headers=HEADERS, timeout=30)
+                resp.raise_for_status()
+                df_year = pd.read_csv(io.StringIO(resp.text))
+                break  # this mirror worked, stop trying others for this year
+            except Exception as e:
+                last_err = f"{type(e).__name__} — {e}"
+                continue
+        if df_year is not None:
+            df_year["season"] = y
+            frames.append(df_year)
+        else:
+            errors.append(f"{y}: all sources failed ({last_err})")
+
     if not frames:
         return pd.DataFrame(), errors
 
@@ -153,7 +167,6 @@ with st.sidebar:
     default_idx = players.index(tour["default"]) if tour["default"] in players else 0
     player = st.selectbox("Player", players, index=default_idx)
 
-# Filter to the selected seasons
 season_mask = (data["season"] >= yr_min) & (data["season"] <= yr_max)
 data_f = data[season_mask]
 pv = player_view(data_f, player)
@@ -179,7 +192,6 @@ best_surface = (
     played_surfaces.sort_values("win_pct", ascending=False)["surface"].iloc[0]
     if not played_surfaces.empty else "—"
 )
-ace_rate = pv["p_ace"].mean()
 
 c1, c2, c3, c4 = st.columns(4)
 c1.metric("Matches", f"{total}")
@@ -190,7 +202,7 @@ c4.metric("Best surface", best_surface)
 st.divider()
 
 # --------------------------------------------------------------------------- #
-# Win % by surface (the signature chart)
+# Win % by surface (the signature chart)  +  ranking over time
 # --------------------------------------------------------------------------- #
 left, right = st.columns([1, 1])
 
@@ -198,7 +210,8 @@ with left:
     st.subheader("Win rate by surface")
     bs = by_surface.sort_values("win_pct", ascending=False)
     fig = px.bar(
-        bs, x="surface", y="win_pct", text=bs["win_pct"].round(0).astype(int).astype(str) + "%",
+        bs, x="surface", y="win_pct",
+        text=bs["win_pct"].round(0).astype(int).astype(str) + "%",
         color="surface", color_discrete_map=SURFACE_COLORS,
     )
     fig.update_traces(textposition="outside", cliponaxis=False)
@@ -217,7 +230,7 @@ with right:
             x=rank_ts["match_date"], y=rank_ts["player_rank"],
             mode="lines", line=dict(color=ACCENT, width=2.5),
         ))
-        fig2.update_yaxes(autorange="reversed", title="ATP/WTA rank")  # rank 1 at top
+        fig2.update_yaxes(autorange="reversed", title="ATP/WTA rank")
         fig2.update_layout(height=360, margin=dict(t=10, b=10),
                            plot_bgcolor="rgba(0,0,0,0)", xaxis_title="")
         st.plotly_chart(fig2, use_container_width=True)
@@ -231,13 +244,7 @@ left2, right2 = st.columns([1, 1])
 
 with left2:
     st.subheader("Serve profile by surface")
-    serve = pv.copy()
-    serve["first_in_pct"] = serve["p_1stIn"] / serve["p_svpt"] * 100
-    serve["ace_per_match"] = serve["p_ace"]
-    sp = serve.groupby("surface").agg(
-        first_in_pct=("first_in_pct", "mean"),
-        ace_per_match=("ace_per_match", "mean"),
-    ).reset_index()
+    sp = pv.groupby("surface").agg(ace_per_match=("p_ace", "mean")).reset_index()
     fig3 = px.bar(
         sp, x="surface", y="ace_per_match", color="surface",
         color_discrete_map=SURFACE_COLORS,
