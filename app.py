@@ -40,7 +40,8 @@ TOURS = {
     "ATP (men)": {"repo": "tennis_atp", "prefix": "atp_matches_", "default": "Carlos Alcaraz"},
     "WTA (women)": {"repo": "tennis_wta", "prefix": "wta_matches_", "default": "Iga Swiatek"},
 }
-RAW_BASE = "https://cdn.jsdelivr.net/gh/JeffSackmann/{repo}@master/{prefix}{year}.csv"YEARS = tuple(range(2018, 2025))  # 2018–2024 (widen in the code if you want more history)
+RAW_BASE = "https://cdn.jsdelivr.net/gh/JeffSackmann/{repo}@master/{prefix}{year}.csv"
+YEARS = tuple(range(2018, 2025))  # 2018–2024 (widen in the code if you want more history)
 MIN_MATCHES = 20  # only show players with at least this many matches in the dropdown
 
 # Light, intentional styling (one signature, kept restrained)
