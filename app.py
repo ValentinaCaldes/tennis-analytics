@@ -7,10 +7,15 @@ https://github.com/JeffSackmann/tennis_atp  &  /tennis_wta
 Non-commercial, attribution required. See README.
 """
 
+import io
+
 import pandas as pd
+import requests
 import streamlit as st
 import plotly.express as px
 import plotly.graph_objects as go
+
+HEADERS = {"User-Agent": "Mozilla/5.0 (tennis-analytics portfolio app)"}
 
 # --------------------------------------------------------------------------- #
 # Page config
@@ -35,7 +40,7 @@ TOURS = {
     "ATP (men)": {"repo": "tennis_atp", "prefix": "atp_matches_", "default": "Carlos Alcaraz"},
     "WTA (women)": {"repo": "tennis_wta", "prefix": "wta_matches_", "default": "Iga Swiatek"},
 }
-RAW_BASE = "https://raw.githubusercontent.com/JeffSackmann/{repo}/master/{prefix}{year}.csv"
+RAW_BASE = "https://raw.githubusercontent.com/JeffSackmann/{repo}/refs/heads/master/{prefix}{year}.csv"
 YEARS = tuple(range(2018, 2025))  # 2018–2024 (widen in the code if you want more history)
 MIN_MATCHES = 20  # only show players with at least this many matches in the dropdown
 
@@ -60,18 +65,21 @@ STAT_COLS = ["ace", "df", "svpt", "1stIn", "1stWon", "2ndWon", "SvGms", "bpSaved
 # Data loading
 # --------------------------------------------------------------------------- #
 @st.cache_data(show_spinner=True, ttl=60 * 60 * 24)
-def load_matches(repo: str, prefix: str, years: tuple) -> pd.DataFrame:
-    frames = []
+def load_matches(repo: str, prefix: str, years: tuple):
+    frames, errors = [], []
     for y in years:
         url = RAW_BASE.format(repo=repo, prefix=prefix, year=y)
         try:
-            df = pd.read_csv(url)
+            resp = requests.get(url, headers=HEADERS, timeout=30)
+            resp.raise_for_status()
+            df = pd.read_csv(io.StringIO(resp.text))
             df["season"] = y
             frames.append(df)
-        except Exception:
-            continue  # skip a year that fails to load rather than break the app
+        except Exception as e:  # skip a year that fails rather than break the app
+            errors.append(f"{y}: {type(e).__name__} — {e}")
+            continue
     if not frames:
-        return pd.DataFrame()
+        return pd.DataFrame(), errors
 
     data = pd.concat(frames, ignore_index=True)
     data["surface"] = data["surface"].fillna("Unknown").astype(str).str.title()
@@ -84,7 +92,7 @@ def load_matches(repo: str, prefix: str, years: tuple) -> pd.DataFrame:
     ]:
         if col in data.columns:
             data[col] = pd.to_numeric(data[col], errors="coerce")
-    return data
+    return data, errors
 
 
 @st.cache_data(show_spinner=False)
@@ -130,10 +138,11 @@ with st.sidebar:
     tour_name = st.radio("Tour", list(TOURS.keys()))
     tour = TOURS[tour_name]
 
-data = load_matches(tour["repo"], tour["prefix"], YEARS)
+data, load_errors = load_matches(tour["repo"], tour["prefix"], YEARS)
 
 if data.empty:
-    st.error("Couldn't load the data right now. Refresh in a moment.")
+    st.error("Couldn't load the match data. Error details below:")
+    st.code("\n".join(load_errors) if load_errors else "No data returned.")
     st.stop()
 
 with st.sidebar:
